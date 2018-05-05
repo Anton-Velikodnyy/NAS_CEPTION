@@ -50,6 +50,7 @@ from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
 from tensorflow.contrib.rnn import RNNCell
 from tensorflow.contrib.rnn import LSTMStateTuple
+from tensorflow.contrib.rnn import BasicLSTMCell
 
 _BIAS_VARIABLE_NAME = "bias"
 _WEIGHTS_VARIABLE_NAME = "kernel"
@@ -90,9 +91,9 @@ class LayerRNNCell(RNNCell):
                                      *args, **kwargs)
 
 
-@tf_export("nn.rnn_cell.BasicLSTMCell")
-class BasicLSTMCell(LayerRNNCell):
-  """Basic LSTM recurrent network cell.
+# @tf_export("nn.rnn_cell.BasicLSTMCell")
+class BasicNeatCell(LayerRNNCell):
+  """Basic Neat recurrent network cell.
   The implementation is based on: http://arxiv.org/abs/1409.2329.
   We add forget_bias (default: 1) to the biases of the forget gate in order to
   reduce the scale of forgetting in the beginning of the training.
@@ -110,9 +111,9 @@ class BasicLSTMCell(LayerRNNCell):
                reuse=None,
                name=None,
                dtype=None):
-    """Initialize the basic LSTM cell.
+    """Initialize the basic Neat cell.
     Args:
-      num_units: int, The number of units in the LSTM cell.
+      num_units: int, The number of units in the Neat cell.
       forget_bias: float, The bias added to forget gates (see above).
         Must set to `0.0` manually when restoring from CudnnLSTM-trained
         checkpoints.
@@ -131,7 +132,7 @@ class BasicLSTMCell(LayerRNNCell):
       When restoring from CudnnLSTM-trained checkpoints, must use
       `CudnnCompatibleLSTMCell` instead.
     """
-    super(BasicLSTMCell, self).__init__(_reuse=reuse, name=name, dtype=dtype)
+    super(BasicNeatCell, self).__init__(_reuse=reuse, name=name, dtype=dtype)
     if not state_is_tuple:
       logging.warn("%s: Using a concatenated state is slower and will soon be "
                    "deprecated.  Use state_is_tuple=True.", self)
@@ -162,16 +163,16 @@ class BasicLSTMCell(LayerRNNCell):
     h_depth = self._num_units
     self._kernel = self.add_variable(
         _WEIGHTS_VARIABLE_NAME,
-        shape=[input_depth + h_depth, 4 * self._num_units])
+        shape=[input_depth + h_depth, 8 * self._num_units])
     self._bias = self.add_variable(
         _BIAS_VARIABLE_NAME,
-        shape=[4 * self._num_units],
+        shape=[8 * self._num_units],
         initializer=init_ops.zeros_initializer(dtype=self.dtype))
 
     self.built = True
 
   def call(self, inputs, state):
-    """Long short-term memory cell (LSTM).
+    """Long short-term memory cell (Neat).
     Args:
       inputs: `2-D` tensor with shape `[batch_size, input_size]`.
       state: An `LSTMStateTuple` of state tensors, each shaped
@@ -184,35 +185,86 @@ class BasicLSTMCell(LayerRNNCell):
         `state_is_tuple`).
     """
     sigmoid = math_ops.sigmoid
+    zero = constant_op.constant(0, dtype=dtypes.int32)
     one = constant_op.constant(1, dtype=dtypes.int32)
     # Parameters of gates are concatenated into one multiply for efficiency.
     if self._state_is_tuple:
       c, h = state
     else:
-      c, h = array_ops.split(value=state, num_or_size_splits=2, axis=one)
+      c, h = array_ops.split(value=state, num_or_size_splits=2,
+              axis=one,name="c_h_-_split")
 
-    gate_inputs = math_ops.matmul(
-        array_ops.concat([inputs, h], 1), self._kernel) 
-    gate_inputs = nn_ops.bias_add(gate_inputs, self._bias)
+    # print("c = \n{}\nh = \n{}\n".format(c.get_shape(),h.get_shape()))
+    # print("i = \n{}\n".format(inputs.get_shape()))
 
-    # i = input_gate, j = new_input, f = forget_gate, o = output_gate
-    i, j, f, o = array_ops.split(
-        value=gate_inputs, num_or_size_splits=4, axis=one)
 
-    forget_bias_tensor = constant_op.constant(self._forget_bias, dtype=f.dtype)
-    # Note that using `add` and `multiply` instead of `+` and `*` gives a
-    # performance improvement. So using those at the cost of readability.
+    input_depth = int(inputs.get_shape()[1])
+    shape = int (self._kernel.get_shape()[1])
+    ratio =  [self._num_units * 1, self._num_units * 7]
+
+    # print("w = \n{}\n".format(self._kernel.get_shape()))
+    # W_fi [5,4] W_fh [5,28]
+    W_f,W_r= array_ops.split(
+        value=self._kernel, num_or_size_splits=ratio, axis=one,
+        name="W-f_W-r_-_split_-kernel")
+    # print("w_f = \n{}\nw_r = \n{}\n".format(W_f.get_shape(),W_r.get_shape()))
+
+    # W_fi [1,4] W_fh [4,4]
+    W_fi,W_fh = array_ops.split(
+        value=W_f, num_or_size_splits=[input_depth,self._num_units],
+        axis=zero,name="W-fi_W-fh_-_split_W-f")
+    # print("w_fi = \n{}\nw_fh = \n{}\n".format(W_fi.get_shape(),W_fh.get_shape()))
+    
+    #print("b = \n{}\n".format(self._bias.get_shape()))
+
+    # b_f [_num_units,] b_f [_num_units*7,]
+    b_f,b_r = array_ops.split(
+        value=self._bias, num_or_size_splits=ratio, axis=zero,
+        name="b-f_b-r_-_split_-bias")
+    # print("b_f = \n{}\nb_r = \n{}\n".format(b_f.get_shape(),b_r.get_shape()))
+
+
+    # a [?,_num_units]
+    a = math_ops.multiply(math_ops.matmul(h,W_fh), math_ops.matmul(inputs,W_fi))
+    # print("a = \n{}\n".format(a.get_shape()))
+
+    a = nn_ops.bias_add(value = a, bias = b_f,name="a")
+    # print("a = \n{}\n".format(a.get_shape()))
+
+    # W_ri [input_depth,_num_units*7] W_rh [_num_units,_num_units*7]
+    W_ri,W_rh =  array_ops.split(
+        value=W_r, num_or_size_splits=[input_depth,self._num_units],
+        axis=zero,name="W-ri_W-rh_-_split_W-r")
+    # print("w_ri = \n{}\nw_rh = \n{}\n".format(W_ri.get_shape(),W_rh.get_shape()))
+    
+    # bh [?,_num_units*7]
+    bh = math_ops.add(math_ops.matmul(h,W_rh), math_ops.matmul(inputs,W_ri))
+    # print("bh = \n{}\n".format(bh.get_shape()))
+
+    bh = nn_ops.bias_add(bh, b_r)
+    # print("bh = \n{}\n".format(bh.get_shape()))
+    b,c2,d,e,f,g,h = array_ops.split(
+        value=bh, num_or_size_splits=7, axis=one,name="b_c2_d_e_f_g_h")
+
     add = math_ops.add
     multiply = math_ops.multiply
-    new_c = add(multiply(c, sigmoid(add(f, forget_bias_tensor))),
-                multiply(sigmoid(i), self._activation(j)))
-    new_h = multiply(self._activation(new_c), sigmoid(o))
+    tanh = math_ops.tanh 
+    relu = nn_ops.relu
+    identity = array_ops.identity
+
+
+    #Nas cell 1
+    new_c = multiply(tanh(add(c,tanh(multiply(relu(h),sigmoid(g))))),tanh(add(sigmoid(d),relu(a))))
+    new_h = tanh(multiply(identity(new_c),tanh(add(tanh(multiply(sigmoid(e),tanh(f))),sigmoid(add(sigmoid(b),tanh(c2)))))))
+
 
     if self._state_is_tuple:
       new_state = LSTMStateTuple(new_c, new_h)
     else:
       new_state = array_ops.concat([new_c, new_h], 1)
     return new_h, new_state
+
+
 
 
 # @tf_export("nn.rnn_cell.BasicLSTMCell")
@@ -315,7 +367,8 @@ class BasicNeat2Cell(LayerRNNCell):
     if self._state_is_tuple:
       c, h = state
     else:
-      c, h = array_ops.split(value=state, num_or_size_splits=2, axis=one)
+      c, h = array_ops.split(value=state, num_or_size_splits=2,
+              axis=one,name="c_h_-_split")
 
     # print("c = \n{}\nh = \n{}\n".format(c.get_shape(),h.get_shape()))
     # print("i = \n{}\n".format(inputs.get_shape()))
@@ -328,19 +381,22 @@ class BasicNeat2Cell(LayerRNNCell):
     # print("w = \n{}\n".format(self._kernel.get_shape()))
     # W_fi [5,4] W_fh [5,28]
     W_f,W_r= array_ops.split(
-        value=self._kernel, num_or_size_splits=ratio, axis=one)
+        value=self._kernel, num_or_size_splits=ratio, axis=one,
+        name="W-f_W-r_-_split_-kernel")
     # print("w_f = \n{}\nw_r = \n{}\n".format(W_f.get_shape(),W_r.get_shape()))
 
     # W_fi [1,4] W_fh [4,4]
     W_fi,W_fh = array_ops.split(
-        value=W_f, num_or_size_splits=[input_depth,self._num_units], axis=zero)
+        value=W_f, num_or_size_splits=[input_depth,self._num_units],
+        axis=zero,name="W-fi_W-fh_-_split_W-f")
     # print("w_fi = \n{}\nw_fh = \n{}\n".format(W_fi.get_shape(),W_fh.get_shape()))
     
     #print("b = \n{}\n".format(self._bias.get_shape()))
 
     # b_f [_num_units,] b_f [_num_units*7,]
     b_f,b_r = array_ops.split(
-        value=self._bias, num_or_size_splits=ratio, axis=zero)
+        value=self._bias, num_or_size_splits=ratio, axis=zero,
+        name="b-f_b-r_-_split_-bias")
     # print("b_f = \n{}\nb_r = \n{}\n".format(b_f.get_shape(),b_r.get_shape()))
 
 
@@ -351,11 +407,12 @@ class BasicNeat2Cell(LayerRNNCell):
     sw = nn_ops.bias_add(value = sw, bias = b_f)
     # print("a = \n{}\n".format(a.get_shape()))
     s,t,u,v,w = array_ops.split(
-        value=sw, num_or_size_splits=5, axis=one)
+        value=sw, num_or_size_splits=5, axis=one,name="s_t_v_u_w_-_split_sw")
 
     # W_ri [input_depth,_num_units*7] W_rh [_num_units,_num_units*7]
     W_ri,W_rh =  array_ops.split(
-        value=W_r, num_or_size_splits=[input_depth,self._num_units], axis=zero)
+        value=W_r, num_or_size_splits=[input_depth,self._num_units],
+        axis=zero,name="W-ri_W-rh_-_split_W-r")
     # print("w_ri = \n{}\nw_rh = \n{}\n".format(W_ri.get_shape(),W_rh.get_shape()))
     
     # bh [?,_num_units*7]
@@ -367,7 +424,7 @@ class BasicNeat2Cell(LayerRNNCell):
 
     # b,...,h [?,_num_units]
     x,y,z = array_ops.split(
-        value=xz, num_or_size_splits=3, axis=one)
+        value=xz, num_or_size_splits=3, axis=one,name="x_y_z_-_split_xz")
 
     add = math_ops.add
     multiply = math_ops.multiply
@@ -375,6 +432,7 @@ class BasicNeat2Cell(LayerRNNCell):
     relu = nn_ops.relu
     identity = array_ops.identity
 
+    #Nas cell 2
     new_c = multiply(identity(add(identity(add(c,tanh(z))),identity(y))),sigmoid(add(relu(v),tanh(s))))
     new_h = tanh(multiply(identity(new_c),sigmoid(multiply(sigmoid(add(tanh(x),tanh(w))),sigmoid(add(identity(u),tanh(t)))))))
 
@@ -384,6 +442,5 @@ class BasicNeat2Cell(LayerRNNCell):
     else:
       new_state = array_ops.concat([new_c, new_h], 1)
     return new_h, new_state
-
 
 
