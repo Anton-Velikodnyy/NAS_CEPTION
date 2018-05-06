@@ -268,7 +268,7 @@ class BasicNeatCell(LayerRNNCell):
 
 
 # @tf_export("nn.rnn_cell.BasicLSTMCell")
-class BasicNeat2Cell(LayerRNNCell):
+class AdvancedNeatCell(LayerRNNCell):
   """Basic Neat recurrent network cell.
   The implementation is based on: http://arxiv.org/abs/1409.2329.
   We add forget_bias (default: 1) to the biases of the forget gate in order to
@@ -308,7 +308,7 @@ class BasicNeat2Cell(LayerRNNCell):
       When restoring from CudnnLSTM-trained checkpoints, must use
       `CudnnCompatibleLSTMCell` instead.
     """
-    super(BasicNeat2Cell, self).__init__(_reuse=reuse, name=name, dtype=dtype)
+    super(AdvancedNeatCell, self).__init__(_reuse=reuse, name=name, dtype=dtype)
     if not state_is_tuple:
       logging.warn("%s: Using a concatenated state is slower and will soon be "
                    "deprecated.  Use state_is_tuple=True.", self)
